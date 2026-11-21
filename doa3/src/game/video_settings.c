@@ -18,6 +18,51 @@ extern ptrdiff_t g_xbox_mem_offset;
 static int g_window_mode = VIDEO_BORDERLESS;
 static int g_aspect      = VIDEO_ASPECT_16_9;
 static int g_scale       = 3;
+static int g_stretch_4_3;
+static int g_disable_fog;
+int video_get_disable_fog(void) { return g_disable_fog; }
+void video_set_disable_fog(int disabled) { g_disable_fog = !!disabled; }
+int video_get_stretch_4_3(void) { return g_stretch_4_3; }
+void video_set_stretch_4_3(int enabled) { g_stretch_4_3 = !!enabled; }
+static int g_custom_width = 2560, g_custom_height = 1440;
+static int g_resolution_failed;
+static int g_accepted_scale = 3, g_accepted_aspect = VIDEO_ASPECT_16_9;
+static int g_accepted_width = 2560, g_accepted_height = 1440;
+
+int video_resolution_valid(int width, int height)
+{
+    return width >= VIDEO_RENDER_MIN && height >= VIDEO_RENDER_MIN &&
+           width <= VIDEO_RENDER_MAX && height <= VIDEO_RENDER_MAX &&
+           (uint64_t)width * (uint64_t)height <= VIDEO_RENDER_MAX_PIXELS;
+}
+
+int video_set_custom_resolution(int width, int height)
+{
+    if (!video_resolution_valid(width, height)) return 0;
+    g_custom_width = width; g_custom_height = height;
+    g_scale = 0;
+    g_resolution_failed = 0;
+    return 1;
+}
+
+void video_get_custom_resolution(int *width, int *height)
+{
+    *width = g_custom_width; *height = g_custom_height;
+}
+
+void video_target_size_result(int success)
+{
+    if (success) {
+        g_accepted_scale = g_scale; g_accepted_aspect = g_aspect;
+        g_accepted_width = g_custom_width; g_accepted_height = g_custom_height;
+    } else {
+        g_scale = g_accepted_scale; g_aspect = g_accepted_aspect;
+        g_custom_width = g_accepted_width; g_custom_height = g_accepted_height;
+    }
+    if (!success) g_resolution_failed = 1;
+}
+
+int video_resolution_failed(void) { return g_resolution_failed; }
 
 int video_get_window_mode(void) { return g_window_mode; }
 int video_get_aspect(void)      { return g_aspect; }
@@ -86,14 +131,29 @@ int video_settings_load(void)
     g_window_mode = (wm == VIDEO_WINDOWED) ? VIDEO_WINDOWED : VIDEO_BORDERLESS;
     g_aspect      = valid_aspect(ar);
     g_scale       = (sc >= 1 && sc <= 4) ? sc : 3;
+    g_custom_width = 2560; g_custom_height = 1440;
+    {
+        int cw = (int)GetPrivateProfileIntA("Video", "RenderWidth", 2560, p);
+        int ch = (int)GetPrivateProfileIntA("Video", "RenderHeight", 1440, p);
+        if (video_resolution_valid(cw, ch)) {
+            g_custom_width = cw; g_custom_height = ch;
+            if (GetPrivateProfileIntA("Video", "CustomResolution", 0, p) == 1)
+                g_scale = 0;
+        }
+    }
+    g_disable_fog = GetPrivateProfileIntA("Video", "DisableFog", 0, p) == 1;
+    g_stretch_4_3 = GetPrivateProfileIntA("Video", "Stretch4_3", 0, p) == 1;
+    g_resolution_failed = 0;
     return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
 }
 
 int video_settings_save(void)
 {
     const char *p = doa3_settings_ini_path();
-    char aspect[16];
+    char aspect[16], width[16], height[16];
     _snprintf_s(aspect, sizeof(aspect), _TRUNCATE, "%d", g_aspect);
+    _snprintf_s(width, sizeof width, _TRUNCATE, "%d", g_custom_width);
+    _snprintf_s(height, sizeof height, _TRUNCATE, "%d", g_custom_height);
     /* WindowMode: 0 = windowed, 1 = borderless fullscreen.
      * AspectRatio: Full 4:3, Anamorphic 4:3, 16:9, 21:9, 32:9 (0..4).
      * Keep Widescreen for older builds: 0 = either 4:3 mode, 1 = wider.
@@ -104,7 +164,12 @@ int video_settings_save(void)
                                       g_aspect <= VIDEO_ASPECT_4_3_ANAMORPHIC ? "0" : "1", p) &&
            WritePrivateProfileStringA("Video", "AspectRatio", aspect, p) &&
            WritePrivateProfileStringA("Video", "InternalResolution",
-                                      g_scale == 4 ? "4" : g_scale == 3 ? "3" : g_scale == 2 ? "2" : "1", p);
+                                      g_scale == 0 ? "3" : g_scale == 4 ? "4" : g_scale == 3 ? "3" : g_scale == 2 ? "2" : "1", p) &&
+           WritePrivateProfileStringA("Video", "CustomResolution", g_scale == 0 ? "1" : "0", p) &&
+           WritePrivateProfileStringA("Video", "RenderWidth", width, p) &&
+           WritePrivateProfileStringA("Video", "RenderHeight", height, p) &&
+           WritePrivateProfileStringA("Video", "Stretch4_3", g_stretch_4_3 ? "1" : "0", p) &&
+           WritePrivateProfileStringA("Video", "DisableFog", g_disable_fog ? "1" : "0", p);
 }
 
 /* 480 lines at 1x. The translator maps every guest vertex onto whatever size
@@ -123,6 +188,10 @@ static void video_base_size(int aspect, unsigned *w, unsigned *h)
 
 void video_guest_target_size(int aspect, unsigned *w, unsigned *h)
 {
+    if (g_scale == 0) {
+        *w = (unsigned)g_custom_width; *h = (unsigned)g_custom_height;
+        return;
+    }
     video_base_size(aspect, w, h);
     *w *= (unsigned)g_scale;
     *h *= (unsigned)g_scale;
@@ -132,6 +201,7 @@ void video_set_scale(int scale)
 {
     /* Applied at the next frame boundary, like the aspect. */
     g_scale = (scale >= 1 && scale <= 4) ? scale : 3;
+    g_resolution_failed = 0;
 }
 
 /* XC_VIDEO dword: XGetVideoFlags returns (value >> 16) & 0x5F, and
