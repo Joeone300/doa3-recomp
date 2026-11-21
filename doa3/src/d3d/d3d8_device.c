@@ -16,6 +16,7 @@
  */
 
 #include "d3d8_internal.h"
+#include "../game/video_settings.h"
 #include "d3d8_presentation.h"
 #include "d3d8_nv2aff.h"
 #include "d3d8_srv_bindings.h"
@@ -387,6 +388,11 @@ static HRESULT d3d11_create_guest_target(D3D8DeviceState *state)
     D3D11_TEXTURE2D_DESC td;
     HRESULT hr;
 
+    UINT limit = ID3D11Device_GetFeatureLevel(state->d3d11_device) >= D3D_FEATURE_LEVEL_11_0
+               ? D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION : 8192u; /* feature level 10.x */
+    if (!state->width || !state->height || state->width > limit || state->height > limit ||
+        (uint64_t)state->width * state->height > VIDEO_RENDER_MAX_PIXELS)
+        return E_INVALIDARG;
     memset(&td, 0, sizeof(td));
     td.Width = state->width;
     td.Height = state->height;
@@ -428,7 +434,16 @@ static HRESULT d3d11_create_render_targets(D3D8DeviceState *state)
     HRESULT hr = d3d11_create_swap_rtv(state);
     if (FAILED(hr)) return hr;
     hr = d3d11_create_guest_target(state);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        d3d11_release_guest_target(state);
+        video_target_size_result(0);
+        video_guest_target_size(video_get_aspect(), &state->width, &state->height);
+        video_sync_guest_widescreen();
+        hr = d3d11_create_guest_target(state);
+        if (FAILED(hr)) return hr;
+    } else {
+        video_target_size_result(1);
+    }
 
     /* Bind default render targets */
     g_srv_bindings.valid = 0; /* Target hazards can unbind PS resources. */
@@ -604,7 +619,7 @@ static int g_off_active;
  * is saved and restored, since the pgraph translator does not re-send state
  * it believes is still bound.
  * ================================================================ */
-#include "../game/video_settings.h"
+
 #include <d3dcompiler.h>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -770,6 +785,8 @@ static void swap_resize_if_needed(void)
 /* The aspect or internal-resolution setting changed: rebuild the guest target
  * at the new size and tell the game. Runs right after a flip, so nothing is
  * mid-frame. */
+static void d3d8_invalidate_frame_history(void);
+
 static void d3d8_apply_target_size_change(void)
 {
     D3D8DeviceState *s = &g_device_state;
@@ -777,17 +794,35 @@ static void d3d8_apply_target_size_change(void)
     D3D11_VIEWPORT vp;
     video_guest_target_size(video_get_aspect(), &w, &h);
     /* Full and anamorphic 4:3 share dimensions but need different projections. */
-    video_sync_guest_widescreen();
-    if (w == s->width && h == s->height) return;
-
-    g_srv_bindings.valid = 0; /* Target hazards can unbind PS resources. */
-    ID3D11DeviceContext_OMSetRenderTargets(s->d3d11_context, 0, NULL, NULL);
-    d3d11_release_guest_target(s);
-    s->width = w;
-    s->height = h;
-    if (FAILED(d3d11_create_guest_target(s))) {
+    if (w == s->width && h == s->height) {
+        video_target_size_result(1);
+        video_sync_guest_widescreen();
         return;
     }
+    {
+        /* Allocate ALL replacement resources before touching the live target.
+         * This temporary owns only the five target pointers reset below. */
+        D3D8DeviceState next = *s;
+        next.width = w; next.height = h;
+        next.default_tex = NULL; next.default_rtv = NULL; next.default_srv = NULL;
+        next.default_depth = NULL; next.default_dsv = NULL;
+        if (FAILED(d3d11_create_guest_target(&next))) {
+            d3d11_release_guest_target(&next);
+            video_target_size_result(0);
+            video_sync_guest_widescreen();
+            return;
+        }
+        g_srv_bindings.valid = 0;
+        ID3D11DeviceContext_OMSetRenderTargets(s->d3d11_context, 0, NULL, NULL);
+        d3d11_release_guest_target(s);
+        s->width = w; s->height = h;
+        s->default_tex = next.default_tex; s->default_rtv = next.default_rtv;
+        s->default_srv = next.default_srv; s->default_depth = next.default_depth;
+        s->default_dsv = next.default_dsv;
+    }
+    video_target_size_result(1);
+    video_sync_guest_widescreen();
+    d3d8_invalidate_frame_history();
     g_off_active = 0;
     g_srv_bindings.valid = 0; /* Target hazards can unbind PS resources. */
     ID3D11DeviceContext_OMSetRenderTargets(s->d3d11_context, 1, &s->default_rtv, s->default_dsv);
@@ -853,7 +888,10 @@ static HRESULT d3d8_compose_and_present_from(ID3D11Texture2D *src_tex, ID3D11Sha
         ID3D11DeviceContext_OMGetRenderTargets(ctx, 1, &rtv, &dsv);
 
         /* guest frame, aspect-fitted and centred */
-        if (sw / sh > dar) { vp.Height = sh; vp.Width = sh * dar; }
+        if (video_get_stretch_4_3() && video_get_aspect() == VIDEO_ASPECT_4_3_FULL) {
+            vp.Width = sw; vp.Height = sh;
+        }
+        else if (sw / sh > dar) { vp.Height = sh; vp.Width = sh * dar; }
         else               { vp.Width = sw;  vp.Height = sw / dar; }
         vp.TopLeftX = (float)(int)((sw - vp.Width) * 0.5f);
         vp.TopLeftY = (float)(int)((sh - vp.Height) * 0.5f);
@@ -1286,6 +1324,13 @@ typedef struct { ID3D11Texture2D *tex; ID3D11ShaderResourceView *srv; UINT w, h;
 static FbCopy g_fbcopy;      /* the current frame as of the sampling draw */
 static FbCopy g_prevframe;   /* the last presented frame */
 static int    g_prevframe_valid;
+
+static void d3d8_invalidate_frame_history(void)
+{
+    /* Existing copies resize lazily. Never sample old-size history between
+     * this resize and the next completed frame. */
+    g_prevframe_valid = 0;
+}
 
 static int fbcopy_ensure(FbCopy *c)
 {
