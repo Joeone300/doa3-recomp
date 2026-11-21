@@ -35,6 +35,11 @@ const char *doa3_settings_ini_path(void);
 
 int  video_get_window_mode(void);
 int  video_get_aspect(void);
+/* Presentation only, effective for native 4:3 Full Screen. */
+int video_get_disable_fog(void);
+void video_set_disable_fog(int disabled);
+int video_get_stretch_4_3(void);
+void video_set_stretch_4_3(int enabled);
 const char *video_aspect_name(int aspect);
 float video_display_aspect(int aspect);
 float video_projection_ratio(int aspect);
@@ -56,6 +61,18 @@ void video_set_aspect(int aspect);
 
 /* Internal resolution: 1 = 480 lines, 2 = 960, 3 = 1440 (default), 4 = 1920. Applied at the next
  * frame boundary. */
+/* Scale 0 selects explicit internal dimensions. The pixel budget also bounds
+ * history/async copies, not just the primary colour and depth targets. */
+#define VIDEO_RENDER_MIN 320
+#define VIDEO_RENDER_MAX 8192
+#define VIDEO_RENDER_MAX_PIXELS 16777216u
+int video_resolution_valid(int width, int height);
+int video_set_custom_resolution(int width, int height);
+void video_get_custom_resolution(int *width, int *height);
+/* Renderer acknowledgement. A rejected allocation restores the last accepted
+ * resolution and aspect, with an error visible in the Video menu. */
+void video_target_size_result(int success);
+int video_resolution_failed(void);
 int  video_get_scale(void);
 void video_set_scale(int scale);
 
