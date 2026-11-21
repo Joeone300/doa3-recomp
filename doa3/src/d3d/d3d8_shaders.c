@@ -17,6 +17,7 @@
  */
 
 #include "d3d8_internal.h"
+#include "../game/video_settings.h"
 #include "d3d8_nv2aff.h"
 #include <d3dcompiler.h>
 #include <string.h>
@@ -817,7 +818,7 @@ void d3d8_shaders_prepare_draw(DWORD fvf)
         if (rs && rs[D3DRS_LIGHTING]) cb->flags |= 0x10;
 
         /* Fog parameters */
-        if (rs && rs[D3DRS_FOGENABLE]) {
+        if (rs && rs[D3DRS_FOGENABLE] && !video_get_disable_fog()) {
             float fog_start, fog_end, fog_density;
             memcpy(&fog_start, &rs[D3DRS_FOGSTART], sizeof(float));
             memcpy(&fog_end, &rs[D3DRS_FOGEND], sizeof(float));
@@ -913,7 +914,7 @@ void d3d8_shaders_prepare_draw(DWORD fvf)
         }
 
         /* Fog color */
-        if (rs && rs[D3DRS_FOGENABLE]) {
+        if (rs && rs[D3DRS_FOGENABLE] && !video_get_disable_fog()) {
             DWORD fc = rs[D3DRS_FOGCOLOR];
             pc->fog_color[0] = ((fc >> 16) & 0xFF) / 255.0f;
             pc->fog_color[1] = ((fc >>  8) & 0xFF) / 255.0f;
