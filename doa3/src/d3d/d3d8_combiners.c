@@ -33,6 +33,7 @@
  */
 
 #include "d3d8_internal.h"
+#include "../game/video_settings.h"
 #include "d3d8_combiners.h"
 #include "d3d8_shader_cache.h"
 #include "../perf_capture.h"
@@ -527,6 +528,8 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     EMIT("    uint   alpha_func;\n");
     EMIT("    uint   alpha_test_enable;\n");
     EMIT("    uint   fog_enable;\n");
+    EMIT("    uint   fog_disable;\n");
+    EMIT("    uint3  fog_padding;\n");
     EMIT("};\n\n");
 
     /* ---- Input structure ---- */
@@ -550,7 +553,9 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
     EMIT("    float4 r_c0   = c0[0];\n");
     EMIT("    float4 r_c1   = c1[0];\n");
     /* FOG: rgb = fog colour, a = the interpolated fog factor (1 = no fog). */
-    EMIT("    float4 r_fog  = float4(fog_color.rgb, input.fog);\n");
+    /* Override the factor here as well as in the vertex path: direct NV2A
+     * final combiners blend fog themselves, even with FOGENABLE off. */
+    EMIT("    float4 r_fog  = float4(fog_color.rgb, fog_disable ? 1.0 : input.fog);\n");
 
     /* Vertex colors: Xbox D3DCOLOR is BGRA in memory, the vertex shader
      * should have already swizzled to RGBA. */
@@ -1097,7 +1102,8 @@ BOOL d3d8_combiners_prepare_draw(void)
     consts.alpha_ref = rs[D3DRS_ALPHAREF] / 255.0f;
     consts.alpha_func = rs[D3DRS_ALPHAFUNC];
     consts.alpha_test_enable = rs[D3DRS_ALPHATESTENABLE] ? 1 : 0;
-    consts.fog_enable = (!g_direct_on && rs[D3DRS_FOGENABLE]) ? 1 : 0;
+    consts.fog_disable = video_get_disable_fog() ? 1 : 0;
+    consts.fog_enable = (!consts.fog_disable && !g_direct_on && rs[D3DRS_FOGENABLE]) ? 1 : 0;
 
     if (!g_last_consts_valid || memcmp(&consts, &g_last_consts, sizeof consts)) {
         g_last_consts_valid = 0;
