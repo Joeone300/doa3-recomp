@@ -248,6 +248,8 @@ typedef struct NV2APSConstants {
     UINT  alpha_func;                       /* D3DCMPFUNC enum value */
     UINT  alpha_test_enable;                /* 0 or 1 */
     UINT  fog_enable;                       /* 0 or 1 */
+    UINT  fog_disable;                      /* force no-fog factor in ALL combiners */
+    UINT  fog_padding[3];                   /* HLSL constant-buffer alignment */
 } NV2APSConstants;
 
 /* ================================================================
