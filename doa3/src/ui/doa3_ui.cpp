@@ -472,6 +472,7 @@ void DrawControlsSection()
 
 void DrawVideoSection()
 {
+    static bool custom_edit = false;
     static const char *kWindow[] = { "Windowed", "Borderless fullscreen" };
     const char *kAspect[VIDEO_ASPECT_COUNT];
     for (int i = 0; i < VIDEO_ASPECT_COUNT; ++i) kAspect[i] = video_aspect_name(i);
@@ -482,6 +483,9 @@ void DrawVideoSection()
         video_set_window_mode(VIDEO_BORDERLESS);
         video_set_aspect(VIDEO_ASPECT_16_9);
         video_set_scale(3);
+        custom_edit = false;
+        video_set_stretch_4_3(0);
+        video_set_disable_fog(0);
         g_menu_scale = 100;
         ResetPerformanceOverlay();
         SetStatus("Video settings reset to defaults");
@@ -504,13 +508,59 @@ void DrawVideoSection()
 
     int ar = video_get_aspect();
     if (ImGui::Combo("Aspect ratio", &ar, kAspect, IM_ARRAYSIZE(kAspect)) &&
-        ar != video_get_aspect())
+        ar != video_get_aspect()) {
         video_set_aspect(ar);
+        if (ar != VIDEO_ASPECT_4_3_FULL) video_set_stretch_4_3(0);
+    }
+    bool stretch = video_get_stretch_4_3() != 0;
+    if (ImGui::Checkbox("4:3 stretched (fill window)", &stretch)) {
+        video_set_stretch_4_3(stretch);
+        if (stretch) video_set_aspect(VIDEO_ASPECT_4_3_FULL);
+    }
+    HelpMarker("Stretches the original 4:3 game image to fill the entire window. "
+               "Selects 4:3 Full Screen; the camera and HUD keep their original framing. "
+               "This menu stays at window resolution.");
 
+    static int custom_w = 2560, custom_h = 1440;
+    static bool custom_initialized = false;
+    if (!custom_initialized) {
+        video_get_custom_resolution(&custom_w, &custom_h);
+        custom_initialized = true;
+    }
+    bool custom = video_get_scale() == 0 || custom_edit;
+    if (ImGui::Checkbox("Custom render resolution", &custom)) {
+        custom_edit = custom;
+        if (custom) video_get_custom_resolution(&custom_w, &custom_h);
+        else video_set_scale(3);
+    }
+    if (custom) {
+        ImGui::InputInt("Render width", &custom_w, 16, 128);
+        ImGui::InputInt("Render height", &custom_h, 16, 128);
+        bool valid = video_resolution_valid(custom_w, custom_h) != 0;
+        ImGui::BeginDisabled(!valid);
+        if (ImGui::Button("Apply render resolution")) {
+            video_set_custom_resolution(custom_w, custom_h);
+            custom_edit = false;
+        }
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("320-8192 pixels per side; at most 16,777,216 pixels. "
+                           "Applied at the next frame boundary. Aspect ratio controls the camera, "
+                           "independently of the render dimensions.");
+    }
+    if (video_resolution_failed())
+        ImGui::TextWrapped("Could not allocate render targets. Previous video settings restored.");
     int sc = video_get_scale() - 1;
+    ImGui::BeginDisabled(custom);
     if (ImGui::Combo("Internal resolution", &sc, kScale, IM_ARRAYSIZE(kScale)) &&
         sc + 1 != video_get_scale())
         video_set_scale(sc + 1);
+    ImGui::EndDisabled();
+
+    bool disable_fog = video_get_disable_fog() != 0;
+    if (ImGui::Checkbox("Disable fog", &disable_fog))
+        video_set_disable_fog(disable_fog);
+    HelpMarker("Disables distance fog without removing textures or changing the game's saved fog state. "
+               "May change the intended appearance of some stages.");
 
     /* 0.2.17: the Escape menu's own size (was in General in 0.2.16). */
     ImGui::Spacing();
