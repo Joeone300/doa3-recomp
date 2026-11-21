@@ -12,9 +12,14 @@ static DWORD test_module_name(HMODULE module, LPSTR path, DWORD size)
     strcpy_s(path, size, test_exe);
     return (DWORD)strlen(path);
 }
-#define GetModuleFileNameA test_module_name
+static DWORD test_module_name_w(HMODULE module, LPWSTR path, DWORD size)
+{
+    (void)module;
+    return (DWORD)MultiByteToWideChar(CP_ACP, 0, test_exe, -1, path, (int)size) - 1;
+}
+#define GetModuleFileNameW test_module_name_w
 #include "../../src/game/video_settings.c"
-#undef GetModuleFileNameA
+#undef GetModuleFileNameW
 HWND d3d8_GetHWND(void) { return NULL; }
 ptrdiff_t g_xbox_mem_offset;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x); result=1; goto cleanup; } } while(0)
@@ -58,7 +63,7 @@ int main(void)
             CHECK(w==widths[aspect]*scale && h==480*scale);
             float hud_x, hud_w;
             video_hud_region(w,&hud_x,&hud_w);
-            CHECK(fabsf(hud_x*2+hud_w-(float)w)<0.001f);
+            CHECK(fabsf(hud_x*2+hud_w-(float)w)<=1.001f); /* integer-pixel centering */
             if (aspect<=VIDEO_ASPECT_16_9) CHECK(hud_x==0 && hud_w==(float)w);
             else CHECK(fabsf(hud_w/(float)w*display[aspect]-16.f/9.f)<1e-6f);
         }
@@ -76,6 +81,7 @@ int main(void)
         CHECK(GetPrivateProfileIntA("Audio","MasterVolume",0,ini)==37);
     }
     /* The two 4:3 modes switch projection without a render-target resize. */
+    video_set_scale(3);
     video_set_aspect(VIDEO_ASPECT_4_3_FULL); video_sync_guest_widescreen();
     video_guest_target_size(video_get_aspect(),&w,&h);
     CHECK(w==1920 && h==1440 && WORD_AT(0x251620)==bits[0]);
@@ -91,11 +97,55 @@ int main(void)
     CHECK(video_settings_load() && video_get_aspect()==VIDEO_ASPECT_16_9);
     video_set_aspect(-1); CHECK(video_get_aspect()==VIDEO_ASPECT_16_9);
     video_set_aspect(VIDEO_ASPECT_COUNT); CHECK(video_get_aspect()==VIDEO_ASPECT_16_9);
+    CHECK(!video_get_disable_fog());
+    video_set_disable_fog(1);
+    CHECK(video_settings_save());
+    video_set_disable_fog(0);
+    CHECK(video_settings_load() && video_get_disable_fog());
+    video_set_disable_fog(0);
+    CHECK(video_settings_save());
+    CHECK(video_settings_load() && !video_get_disable_fog());
+    CHECK(!video_get_stretch_4_3());
+    video_set_aspect(VIDEO_ASPECT_4_3_FULL);
+    video_set_stretch_4_3(1);
+    CHECK(video_projection_ratio(video_get_aspect()) == 3.f/4.f);
+    CHECK(video_xc_video_value()==0);
+    video_hud_region(1920,&(float){0},&(float){0});
+    CHECK(video_settings_save());
+    video_set_stretch_4_3(0);
+    CHECK(video_settings_load() && video_get_stretch_4_3());
+    CHECK(video_get_aspect()==VIDEO_ASPECT_4_3_FULL);
+    video_set_stretch_4_3(0);
+    CHECK(video_settings_save());
+    CHECK(video_settings_load() && !video_get_stretch_4_3());
+    CHECK(!video_resolution_valid(-1,1440));
+    CHECK(!video_resolution_valid(0,0));
+    CHECK(!video_resolution_valid(8193,480));
+    CHECK(!video_resolution_valid(8192,8192));
+    CHECK(video_resolution_valid(3840,2160));
+    video_set_scale(2); video_target_size_result(1);
+    CHECK(video_set_custom_resolution(1921,1081));
+    video_guest_target_size(video_get_aspect(),&w,&h);
+    CHECK(w==1921 && h==1081 && video_get_scale()==0);
+    CHECK(!video_set_custom_resolution(1,1));
+    CHECK(video_settings_save());
+    video_set_scale(1);
+    CHECK(video_settings_load() && video_get_scale()==0);
+    video_guest_target_size(video_get_aspect(),&w,&h);
+    CHECK(w==1921 && h==1081);
+    video_target_size_result(0);
+    CHECK(video_resolution_failed() && video_get_scale()==2);
+    video_set_scale(3); CHECK(!video_resolution_failed());
+    CHECK(WritePrivateProfileStringA("Video","RenderWidth","999999",ini));
+    CHECK(video_settings_load() && video_get_scale()==3);
+    CHECK(WritePrivateProfileStringA("Video","CustomResolution",NULL,ini));
+    CHECK(WritePrivateProfileStringA("Video","InternalResolution","4",ini));
+    CHECK(video_settings_load() && video_get_scale()==4);
 cleanup:
     g_xbox_mem_offset=0;
     free(memory);
     if (ini) { WritePrivateProfileStringA(NULL,NULL,NULL,ini); DeleteFileA(ini); }
     RemoveDirectoryA(directory);
-    if (!result) puts("Five aspect modes, projection bytes, live 4:3 switch, flags, sizes and persistence passed.");
+    if (!result) puts("Five aspects, projection bytes, HUD, custom bounds/rollback, stretch/fog settings and INI persistence passed.");
     return result;
 }
